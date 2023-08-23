@@ -6,7 +6,6 @@ Last Updated on 19 August, 2023
 
 # Standard libraries
 import queue as Q
-import itertools
 import copy
 #other installed libraries
 from matplotlib import pyplot as plt
@@ -18,7 +17,7 @@ import networkx as nx
 # Qiskit libraries
 from qiskit import QuantumCircuit, ClassicalRegister, Aer, execute, transpile
 from qiskit.providers.aer.noise import NoiseModel
-from qiskit.transpiler import PassManager, InstructionDurations
+from qiskit.transpiler import InstructionDurations
 from qiskit.quantum_info import partial_trace, Statevector, DensityMatrix, Operator, PauliList
 from qiskit_ibm_provider import IBMProvider
 # Local modules
