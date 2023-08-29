@@ -91,7 +91,7 @@ def run_cal(backend, filename=None):
     mit = mthree.M3Mitigation(backend)
     mit.cals_from_system(list(range(len(backend.properties().qubits))), shots=8192)
     if filename is None:
-        filename = f'calibrations/{backend.name()}_cal.json'
+        filename = f'calibrations/{backend.name}_cal.json'
     mit.cals_to_file(filename)
     
     return mit
@@ -99,7 +99,7 @@ def run_cal(backend, filename=None):
 def load_cal(backend=None, filename=None):
     mit = mthree.M3Mitigation(backend)
     if filename is None:
-        filename = f'calibrations/{backend.name()}_cal.json'
+        filename = f'calibrations/{backend.name}_cal.json'
     mit.cals_from_file(filename)
     
     return mit
