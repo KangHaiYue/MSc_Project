@@ -6,6 +6,7 @@ Last Updated on 19 August, 2023
 
 # Standard libraries
 import queue as Q
+import itertools
 import copy
 #other installed libraries
 from matplotlib import pyplot as plt
@@ -17,7 +18,7 @@ import networkx as nx
 # Qiskit libraries
 from qiskit import QuantumCircuit, ClassicalRegister, Aer, execute, transpile
 from qiskit.providers.aer.noise import NoiseModel
-from qiskit.transpiler import InstructionDurations
+from qiskit.transpiler import PassManager, InstructionDurations
 from qiskit.quantum_info import partial_trace, Statevector, DensityMatrix, Operator, PauliList
 from qiskit_ibm_provider import IBMProvider
 # Local modules
@@ -153,6 +154,7 @@ class Teleportation(Free_EntangleBase):
 
         self.reps = None
         self.shots = None
+        self.qrem_shots = None
         self.qrem = None
         self.sim = None
 
@@ -387,40 +389,6 @@ class Teleportation(Free_EntangleBase):
                 delays_new[i] = np.round(t*scale/16)*16 #rescale the delay time between X gates
 
         return delays_new
-    
-
-    def apply_mthree(self, pvecs_list, counts_list, mit=None):
-        """apply M3 mitigation to counts/pvecs
-
-        Args:
-            pvecs_list (list): list of probability vectors dictionaries
-            counts_list (list): list of counts dictionaries
-            mit : mthreeMitigation object with corresponding backend Defaults to None.
-
-        Returns:
-            two lists of dictionaries: mitigated pvecs and counts
-        """
-        if mit is None:
-            mit = load_cal(self.backend)
-        self.mit = mit
-        
-        counts_list_mit = counts_list.copy()
-        pvecs_list_mit = pvecs_list.copy()
-        
-        for i in range(self.reps):
-            for basis, counts in counts_list[i].items():
-                corrected_counts = self.mit.apply_correction(counts, list(range(self.nqubits)))
-                counts_list_mit[i][basis] = corrected_counts.nearest_probability_distribution()
-                #Unnormalise
-                for bit_str, prob in counts_list_mit[i][basis].items():
-                    counts_list_mit[i][basis][bit_str] = prob*self.shots
-                    bit_str_binary = bit_str[::-1]
-                    idx = int(bit_str_binary, 2)
-                    pvecs_list_mit[i][basis][idx] = prob
-        
-        return pvecs_list_mit, counts_list_mit
-    
-
         
     def run_qst(self, reps=1, shots=4096, qrem=False, sim=None, output='default',
                 execute_only=False):
@@ -897,6 +865,7 @@ class Teleportation(Free_EntangleBase):
         try:  # Try to obtain QREM results
             result_qrem.get_counts('qrem0')
             self.qrem = True
+            self.qrem_shots = result_qrem.results[0].shots
         except:
             self.qrem = False
 
@@ -946,7 +915,7 @@ class Teleportation(Free_EntangleBase):
                         M_list[i][ii, jj] += count
 
             # Normalise
-            norm = 1/self.shots
+            norm = 1/self.qrem_shots
             for M in M_list:
                 M *= norm
 
@@ -1002,6 +971,7 @@ class Teleportation(Free_EntangleBase):
         if qrem_dict is not None:
             self.qrem = True
             result = provider.backend.retrieve_job(qrem_dict['qrem']).result()
+            self.qrem_shots = result.results[0].shots
             qrem_counts = [result.get_counts('qrem0'),
                            result.get_counts('qrem1')]
 
@@ -1013,7 +983,7 @@ class Teleportation(Free_EntangleBase):
                         M_list[i][ii, jj] += count
 
             # Normalise
-            norm = 1/self.shots
+            norm = 1/self.qrem_shots
             for M in M_list:
                 M *= norm
 
@@ -1022,6 +992,7 @@ class Teleportation(Free_EntangleBase):
             self.qrem = False
 
         return qst_counts_multi, pvecs_multi  # Multiple experiments
+    
     
     def apply_reduced_qrem_to_pvec(self, pvec, gap, measurements_order, mitigate_qubits = [1,3,4,5]):
         """Apply QREM qubit-wisely on selected qubits
@@ -1037,6 +1008,7 @@ class Teleportation(Free_EntangleBase):
         """
         mitigate_qubits_true = list(set(mitigate_qubits).intersection(measurements_order))
         threshold = 0.001/self.shots#set minimum threshold, zero out the count if below it
+        #threshold = 0
         #iterate over each qubit
         for q in mitigate_qubits_true:
             idx = measurements_order.index(q)
@@ -1088,12 +1060,12 @@ class Teleportation(Free_EntangleBase):
                             pvec[num] = reduced_pvec_mit[1]
                         else:
                             pvec[num] = 0
-        pvec = find_closest_pvec(pvec)
+        #pvec = find_closest_pvec(pvec)
         print(f'{np.count_nonzero(pvec)}')
         return pvec
         
     def apply_qrem_teleported_counts(self, qst_counts, pvecs, teleportation = 'teleportation', 
-                                     qrem='QREM', mitigate_qubits = [1,3,4,5]):
+                                     qrem='QREM', mitigate_qubits = [1,3,4,5], mit = None):
         """Apply QREM
 
         Args:
@@ -1118,25 +1090,40 @@ class Teleportation(Free_EntangleBase):
                         X_measurements = self.teleportation_basis[gap][pair]['X']
                         targets = list(pair)
                         measurements_order = X_measurements + targets
-                        # Invert n-qubit calibration matrix
-                        if qrem == 'QREM':
-                            M_inv = la.inv(self.calc_M_multi(measurements_order))
-                        for basis, pvec in basis_dict.items():
-                            #correct pvec according to mitigation mode
+                        if qrem == 'M3':
+                            for basis in basis_dict.keys():
+                                counts = qst_counts[i][gap][pair][basis]
+                                counts_mit = self.apply_mthree(counts, measurements_order, mit = mit)
+                                qst_counts_mit[gap][pair][basis] = counts_mit
+                                for bit_str, prob in counts_mit.items():
+                                    pair_str, X_str = bit_str.split(' ')
+                                    new_str = pair_str + X_str
+                                    idx = int(new_str[::-1], 2)
+                                    pvecs_mit[gap][pair][basis][idx] = prob
+                                    qst_counts_mit[gap][pair][basis][bit_str] = prob*self.shots
+                                    
+                        else:
+                            # Invert n-qubit calibration 
                             if qrem == 'QREM':
-                                pvec_mit = np.matmul(M_inv, pvec)
-                            elif qrem =='reduced_QREM':
-                                pvec_mit = self.apply_reduced_qrem_to_pvec(pvec, int(gap), measurements_order,
+                                M_inv = la.inv(self.calc_M_multi(measurements_order))
+                            for basis, pvec in basis_dict.items():
+                                #correct pvec according to mitigation mode
+                                if qrem == 'QREM':
+                                    pvec_mit = np.matmul(M_inv, pvec)
+                                    #pvec_mit = find_closest_pvec(pvec_mit)
+                                elif qrem =='reduced_QREM':
+                                    pvec_mit = self.apply_reduced_qrem_to_pvec(pvec, int(gap), measurements_order,
                                                                            mitigate_qubits=mitigate_qubits)
-                            #pvec_mit_physical = find_closest_pvec(pvec_mit)
-                            pvecs_mit[gap][pair][basis] = pvec_mit
-                            for j, prob in enumerate(pvec_mit):
-                                bit_str = bin(j)[2:].zfill(gap+2)[::-1]
-                                target_str = bit_str[:2]
-                                X_str = bit_str[2:]
-                                #Z_str = bit_str[2+len(X_measurements):]
-                                bit_str_new = target_str + ' ' + X_str
-                                qst_counts_mit[gap][pair][basis][bit_str_new] = prob*self.shots
+                                pvec_mit /= np.sum(pvec_mit)
+                                pvec_mit = find_closest_pvec(pvec_mit)
+                                pvecs_mit[gap][pair][basis] = pvec_mit
+                                for j, prob in enumerate(pvec_mit):
+                                    bit_str = bin(j)[2:].zfill(gap+2)[::-1]
+                                    target_str = bit_str[:2]
+                                    X_str = bit_str[2:]
+                                    #Z_str = bit_str[2+len(X_measurements):]
+                                    bit_str_new = target_str + ' ' + X_str
+                                    qst_counts_mit[gap][pair][basis][bit_str_new] = prob*self.shots
                                 
                     elif teleportation == 'swap':
                         measurements_order = list(pair)
@@ -1144,7 +1131,8 @@ class Teleportation(Free_EntangleBase):
                         M_inv = la.inv(self.calc_M_multi(measurements_order))
                         for basis, pvec in basis_dict.items():
                             pvec_mit = np.matmul(M_inv, pvec)
-                            #pvec_mit_physical = find_closest_pvec(pvec_mit)
+                            pvec_mit /= np.sum(pvec_mit)
+                            pvec_mit = find_closest_pvec(pvec_mit)
                             pvecs_mit[gap][pair][basis] = pvec_mit
                             for j, prob in enumerate(pvec_mit):
                                 bit_str = bin(j)[2:].zfill(2)[::-1]
@@ -1154,6 +1142,28 @@ class Teleportation(Free_EntangleBase):
             pvecs_list_mit.append(pvecs_mit)
 
         return qst_counts_list_mit, pvecs_list_mit
+
+    def apply_mthree(self, counts, measurements_order, mit=None):
+        """apply M3 mitigation to counts/pvecs
+
+        Args:
+            counts (dictionary): raw counts
+            measurements_order (list): list of the order when the measurements gates was executed 
+            mit : mthreeMitigation object with corresponding backend Defaults to None.
+
+        Returns:
+             dictionary: mitigated counts using M3
+        """
+        if mit is None:
+            mit = load_cal(self.backend)
+        self.mit = mit
+        
+        counts_mit = counts.copy()
+        for basis, counts in counts.items():
+            corrected_counts = self.mit.apply_correction(counts, measurements_order)
+            counts_mit[basis] = corrected_counts.nearest_probability_distribution()
+
+        return counts_mit
     
     def apply_qrem_teleported_counts_from_dynamic_circuits(self, qst_counts, pvecs):
         """Apply full QREM to dynamic circuits only
@@ -1183,7 +1193,8 @@ class Teleportation(Free_EntangleBase):
                     
                     for basis, pvec in basis_dict.items():
                         pvec_mit = np.matmul(M_inv, pvec)
-                        #pvec_mit_physical = find_closest_pvec(pvec_mit)
+                        pvec_mit /= np.sum(pvec_mit)
+                        pvec_mit = find_closest_pvec(pvec_mit)
                         pvecs_mit[gap][pair][basis] = pvec_mit
                         #store calibrated pvec into counts, separating the ending qubits and intermediate qubits
                         #bit strings
@@ -1269,7 +1280,7 @@ class Teleportation(Free_EntangleBase):
         
         
     def recon_teleported_density_mats(self, result, result_qrem, post_processing = True, apply_mit='QREM',
-                                      teleportation = 'teleportation', mitigate_qubits = [1,3,4,5]):
+                                      teleportation = 'teleportation', mitigate_qubits = [1,3,4,5], mit = None):
         """Reconstruct density matrices of the teleported two-qubit graph state
 
         Args:
@@ -1294,12 +1305,19 @@ class Teleportation(Free_EntangleBase):
                 qst_counts, pvecs = self.apply_qrem_teleported_counts(qst_counts, pvecs,
                                                                       teleportation = teleportation, qrem = 'QREM')
                 print('QREM done')
-            if apply_mit == 'reduced_QREM':
+            elif apply_mit == 'reduced_QREM':
                 qst_counts, pvecs = self.apply_qrem_teleported_counts(qst_counts, pvecs,
                                                                       teleportation = teleportation, 
                                                                       qrem = 'reduced_QREM',
                                                                       mitigate_qubits = mitigate_qubits)
                 print('reduced_QREM done')
+            elif apply_mit == 'M3':
+                qst_counts, pvecs = self.apply_qrem_teleported_counts(qst_counts, pvecs,
+                                                                      teleportation = teleportation, 
+                                                                      qrem = 'M3',
+                                                                      mitigate_qubits = mitigate_qubits,
+                                                                      mit = mit)
+                print('M3 done')
             #calculate density matrices
             if teleportation == 'teleportation':
                 #categorise
@@ -2478,7 +2496,7 @@ def calc_teleported_n_mean_gap(n_list, bellstate):
                 for pair, bellstates_dict in pairs_dict.items():
                     if gap == 1:
                         n_dict[gap].append((bellstates_dict['BS_1']+bellstates_dict['BS_2'])/2)
-                    elif gap%2 == 0:
+                    else:
                         n_dict[gap].append((bellstates_dict['BS_1']+bellstates_dict['BS_2']+
                                             bellstates_dict['BS_3']+bellstates_dict['BS_4'])/4)
     #find negativity of each variant bellstate
