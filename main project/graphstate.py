@@ -1607,8 +1607,7 @@ class GraphState(Free_EntangleBase):
         Args:
             pvecs_list (list): list of probability vectors dictionaries
             counts_list (list): list of counts dictionaries
-            mit : mthreeMitigation object with corresponding backend Defaults to None.
-
+            
         Returns:
             two lists of dictionaries: mitigated pvecs and counts
         """
